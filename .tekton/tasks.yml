@@ -1,0 +1,85 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: cleanup
+spec:
+  # Define a workspace named 'source' where the cleanup operation will occur.
+  workspaces:
+    - name: source
+      description: The workspace to clean up
+  steps:
+    # This single step performs the file removal.
+    - name: remove
+      image: alpine:3 # A lightweight image that has 'sh' and 'rm'
+      
+      # Define environment variables used within the script.
+      env:
+        - name: WORKSPACE_SOURCE_PATH
+          value: $(workspaces.source.path) # Tekton substitution for the workspace mount path
+      
+      # Set the working directory to the workspace path for simpler script execution.
+      workingDir: $(workspaces.source.path)
+      
+      # Security context to allow running the root user (necessary for the cleanup script)
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+      
+      # The main script to safely clean the contents of the workspace directory.
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        
+        echo "Removing all files from ${WORKSPACE_SOURCE_PATH} ..."
+        
+        # Delete any existing contents of the directory if it exists.
+        #
+        # We don't just "rm -rf ${WORKSPACE_SOURCE_PATH}" because ${WORKSPACE_SOURCE_PATH} might be "/"
+        # or the root of a mounted volume.
+        if [ -d "${WORKSPACE_SOURCE_PATH}" ] ; then
+          # Delete non-hidden files and directories
+          rm -rf "${WORKSPACE_SOURCE_PATH:?}"/*
+          # Delete files and directories starting with . but excluding ..
+          rm -rf "${WORKSPACE_SOURCE_PATH}"/.[!.]*
+          # Delete files and directories starting with .. plus any other character
+          rm -rf "${WORKSPACE_SOURCE_PATH}"/..?*
+        fi
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: nose
+spec:
+  # Define the required workspace where the code is located.
+  workspaces:
+    - name: source
+      description: The workspace containing the application source code.
+  
+  # Define a parameter to allow customizing the arguments passed to nosetests.
+  params:
+    - name: args
+      description: Arguments to pass to nose
+      type: string
+      default: "-v" # Default is verbose output
+      
+  # The step to install dependencies and run the tests.
+  steps:
+    - name: nosetests
+      image: python:3.9-slim # Use a lightweight Python image
+      
+      # The working directory is set to the mounted source code path.
+      workingDir: $(workspaces.source.path)
+      
+      script: |
+        #!/bin/bash
+        set -e
+        
+        # 1. Upgrade pip and wheel
+        python -m pip install --upgrade pip wheel
+        
+        # 2. Install Python dependencies from requirements.txt
+        pip install -r requirements.txt
+        
+        # 3. Run the nosetests command, passing the provided arguments
+        nosetests $(params.args)
